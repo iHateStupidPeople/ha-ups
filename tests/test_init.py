@@ -1,13 +1,23 @@
 """Tests for UPS setup and unload."""
 
+from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.ups.api import UPSApiError
-from custom_components.ups.const import CONF_PARCELS, CONF_TRACKING_CODE, DOMAIN
+from custom_components.ups.const import (
+    CONF_PARCELS,
+    CONF_TRACKING_CODE,
+    DOMAIN,
+    STORAGE_KEY,
+)
 
 from .payloads import ACTIVE_CODE, active_sample as _sample
 
@@ -169,3 +179,60 @@ async def test_options_update_applies_live_without_reload(hass):
 
     incoming = hass.states.get("sensor.ups_incoming_parcels")
     assert incoming.state == "2"
+
+
+async def test_removing_the_entry_leaves_no_store_behind(hass, hass_storage):
+    """The debounced cache write must not outlive the entry.
+
+    A poll queues a write for a few seconds later. Removing the integration
+    inside that delay deleted the store and then had it written straight
+    back, leaving the tracked parcels on disk for an entry that is gone.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DOMAIN,
+        options={CONF_PARCELS: [{CONF_TRACKING_CODE: ACTIVE_CODE}]},
+    )
+    entry.add_to_hass(hass)
+    key = f"{STORAGE_KEY}.{entry.entry_id}"
+
+    with patch(
+        "custom_components.ups.api.UPSApiClient.async_get_parcel",
+        new=AsyncMock(return_value=_sample()),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await entry.runtime_data.coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert key not in hass_storage
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=1))
+    await hass.async_block_till_done()
+    assert key not in hass_storage
+
+
+async def test_unload_writes_the_cache_at_once(hass, hass_storage):
+    """A reload inside the write delay must still find the last request."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DOMAIN,
+        options={CONF_PARCELS: [{CONF_TRACKING_CODE: ACTIVE_CODE}]},
+    )
+    entry.add_to_hass(hass)
+    key = f"{STORAGE_KEY}.{entry.entry_id}"
+
+    with patch(
+        "custom_components.ups.api.UPSApiClient.async_get_parcel",
+        new=AsyncMock(return_value=_sample()),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await entry.runtime_data.coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert ACTIVE_CODE in hass_storage[key]["data"]["raw_cache"]
+    assert ACTIVE_CODE in hass_storage[key]["data"]["last_fetch_by_code"]

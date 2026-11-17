@@ -109,6 +109,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: UPSConfigEntry) -> bool
     """Unload the UPS config entry."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
+    await entry.runtime_data.coordinator.async_flush_cache()
     await entry.runtime_data.session.close()
     # Single-instance integration (single_config_entry), so the services can
     # always go when the entry unloads.

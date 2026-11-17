@@ -359,6 +359,11 @@ from cache after a restart.
 All wall-clock, so it survives a restart. A backwards clock jump (a Pi with no
 RTC syncing after boot) re-anchors rather than banking the skew as credit.
 
+Unloading the entry writes the store at once (`async_flush_cache`) instead of
+leaving the debounced write pending. Otherwise a reload inside the delay reads
+a store without the last request's budget spend, and removing the integration
+has the store file written back right after `async_remove_entry` deleted it.
+
 ## Bus events
 
 Fired by `_fire_change_events()`, silent on the very first refresh. Every

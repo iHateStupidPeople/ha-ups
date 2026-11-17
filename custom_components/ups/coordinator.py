@@ -393,21 +393,33 @@ class UPSCoordinator(DataUpdateCoordinator[list[dict]]):
             self._budget.available(),
         )
 
+    def _cache_payload(self) -> dict[str, Any]:
+        """Everything that is persisted: the cache, the fetch floor, the budget."""
+        return {
+            "last_fetch_utc": self._last_fetch_utc,
+            "raw_cache": self._raw_cache,
+            "delivered_codes": sorted(self._delivered_codes),
+            "attempted_codes": sorted(self._attempted_codes),
+            "consecutive_failures": self._consecutive_failures,
+            "standdown_until_utc": self._standdown_until_utc,
+            "last_fetch_by_code": self._last_fetch_by_code,
+            "budget": self._budget.as_dict(),
+        }
+
     def _persist_cache(self) -> None:
         """Queue a debounced write of the cache and the fetch floor."""
-        self._store.async_delay_save(
-            lambda: {
-                "last_fetch_utc": self._last_fetch_utc,
-                "raw_cache": self._raw_cache,
-                "delivered_codes": sorted(self._delivered_codes),
-                "attempted_codes": sorted(self._attempted_codes),
-                "consecutive_failures": self._consecutive_failures,
-                "standdown_until_utc": self._standdown_until_utc,
-                "last_fetch_by_code": self._last_fetch_by_code,
-                "budget": self._budget.as_dict(),
-            },
-            STORE_SAVE_DELAY_SECONDS,
-        )
+        self._store.async_delay_save(self._cache_payload, STORE_SAVE_DELAY_SECONDS)
+
+    async def async_flush_cache(self) -> None:
+        """Write the cache now and retire any debounced write still pending.
+
+        Called on unload. The debounced write is not tied to the entry, so
+        left alone it fires after the unload: a reload inside the delay reads
+        a store that has not heard of the last request (a spent budget token
+        comes back), and a removal has its store file written again right
+        after ``async_remove_entry`` deleted it.
+        """
+        await self._store.async_save(self._cache_payload())
 
     def _schedule(self, now: datetime, wait_seconds: float | None) -> None:
         """Set ``update_interval``, letting an active stand-down outrank it.
